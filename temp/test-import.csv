@@ -1,0 +1,11 @@
+date,action,ticker,type,exchange,wallet,quantity,price,currency,fees,fees_currency,notes
+2024-01-15,BUY,BTC,Crypto,Binance,Binance Spot,0.5,42000,USDT,10,USDT,First BTC purchase
+2024-01-16,BUY,ETH,Crypto,Binance,Binance Spot,2,2500,USDT,5,USDT,ETH accumulation
+2024-01-17,SELL,ETH,Crypto,Binance,Binance Spot,0.5,2600,USDT,3,USDT,Partial ETH sell
+2024-01-18,SWAP,BTC,Crypto,Binance,Binance Spot,0.1,17,ETH,0.001,BTC,BTC to ETH swap
+2024-01-19,BUY,USDT,Crypto,Binance,Binance Spot,1000,1,USD,2,USD,USDT deposit
+2024-01-20,BUY,SOL,Crypto,Binance,Binance Spot,10,95,USDT,1,USDT,SOL entry
+2024-01-21,BUY,ADA,Crypto,Binance,Binance Spot,500,0.5,USDT,0.5,USDT,ADA purchase
+2024-01-22,SELL,SOL,Crypto,Binance,Binance Spot,5,98,USDT,0.8,USDT,Take profit SOL
+2024-01-23,BUY,MATIC,Crypto,Binance,Binance Spot,100,0.85,USDT,0.3,USDT,MATIC buy
+2024-01-24,SWAP,ETH,Crypto,Binance,Binance Spot,0.5,1800,USDT,2,USDT,ETH to USDT

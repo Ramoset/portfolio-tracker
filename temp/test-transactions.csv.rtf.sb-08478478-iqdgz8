@@ -1,0 +1,18 @@
+{\rtf1\ansi\ansicpg1252\cocoartf2822
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fswiss\fcharset0 Helvetica;}
+{\colortbl;\red255\green255\blue255;}
+{\*\expandedcolortbl;;}
+\paperw11900\paperh16840\margl1440\margr1440\vieww11520\viewh8400\viewkind0
+\pard\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\pardirnatural\partightenfactor0
+
+\f0\fs24 \cf0 date,action,ticker,type,exchange,quantity,price,currency,fees,notes\
+2026-02-01,DEPOSIT,USDT,CRYPTO,BINANCE,5000,1,USDT,0,Initial deposit\
+2026-02-01,BUY,BTC,CRYPTO,BINANCE,0.05,42000,USDT,5.25,BTC buy\
+2026-02-01,BUY,ETH,CRYPTO,BYBIT,1.2,2300,USDT,2.10,ETH buy\
+2026-02-01,BUY,SOL,CRYPTO,BINANCE,25,98.5,USDT,1.50,SOL buy\
+2026-02-02,AIRDROP,ARB,CRYPTO,METAMASK,35,0.95,USDT,0,ARB airdrop\
+2026-02-02,SELL,SOL,CRYPTO,BINANCE,10,105.2,USDT,0.80,SOL partial sell\
+2026-02-03,WITHDRAWAL,USDT,CRYPTO,BINANCE,250,1,USDT,1,USDT withdrawal\
+2026-02-04,SELL,BTC,CRYPTO,BINANCE,0.02,43500,USDT,2.20,BTC partial sell\
+2026-02-05,BUY,BTC,CRYPTO,BINANCE,0.5,50000,USDT,0.10,BTC buy\
+}
