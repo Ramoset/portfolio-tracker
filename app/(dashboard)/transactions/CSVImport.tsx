@@ -13,6 +13,7 @@ type ParsedRow = Record<string, string>
 type PreviewResponse = {
   newWallets: string[]
   rootWallets: { id: string; name: string }[]
+  allWallets: { id: string; name: string; level: number }[]
   totalTransactions: number
   needsConfiguration: boolean
 }
@@ -113,6 +114,7 @@ export default function CSVImport({ onClose, onSuccess }: Props) {
   const [preview, setPreview] = useState<PreviewResponse | null>(null)
   const [walletConfig, setWalletConfig] = useState<Record<string, string>>({})
   const [showConfigDialog, setShowConfigDialog] = useState(false)
+  const [skipDuplicates, setSkipDuplicates] = useState(true)
 
   const [progress, setProgress] = useState<ImportProgress | null>(null)
 
@@ -213,6 +215,7 @@ export default function CSVImport({ onClose, onSuccess }: Props) {
 
       let totalSuccess = 0
       let totalFailed = 0
+      let totalSkipped = 0
       const failedDetails: Array<{ row: number | null; error: string }> = []
 
       setProgress({
@@ -244,17 +247,20 @@ export default function CSVImport({ onClose, onSuccess }: Props) {
             transactions: batch,
             walletConfig: config,
             import_batch_id: importBatchId,
+            skipDuplicates,
           }),
         })
 
         const success = Number(result?.summary?.success ?? result?.imported ?? 0)
         const failed = Number(result?.summary?.failed ?? result?.failed ?? 0)
 
+        const skipped = Number(result?.summary?.skipped ?? result?.skipped ?? 0)
         totalSuccess += success
         totalFailed += failed
+        totalSkipped += skipped
 
         const failedRows = Array.isArray(result?.results)
-          ? result.results.filter((r: any) => r?.status !== 'OK')
+          ? result.results.filter((r: any) => r?.status === 'FAIL')
           : []
         for (const fr of failedRows) {
           const rowNumRaw = fr?.transaction?.__row_num
@@ -296,7 +302,8 @@ export default function CSVImport({ onClose, onSuccess }: Props) {
               .join('\n')}${failedDetails.length > 8 ? `\n... (+${failedDetails.length - 8} altri)` : ''}`
           : ''
 
-      alert(`Import completato!\n✅ Success: ${totalSuccess}\n❌ Failed: ${totalFailed}${failPreview}`)
+      const skippedLine = totalSkipped > 0 ? `\n⏭ Duplicati saltati: ${totalSkipped}` : ''
+      alert(`Import completato!\n✅ Importate: ${totalSuccess}${skippedLine}\n❌ Errori: ${totalFailed}${failPreview}`)
 
       if (totalSuccess > 0) {
         onSuccess()
@@ -410,7 +417,17 @@ export default function CSVImport({ onClose, onSuccess }: Props) {
               </div>
             )}
 
-            <div className="flex items-center justify-end">
+            <div className="flex items-center justify-between">
+              <label className="flex items-center gap-2 cursor-pointer select-none text-sm text-gray-600">
+                <input
+                  type="checkbox"
+                  checked={skipDuplicates}
+                  onChange={(e) => setSkipDuplicates(e.target.checked)}
+                  disabled={busy}
+                  className="rounded"
+                />
+                <span>Salta duplicati <span className="text-xs text-gray-400">(stesso giorno/azione/ticker/exchange)</span></span>
+              </label>
               <button
                 onClick={runPreview}
                 className="px-4 py-2 text-sm rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
@@ -450,7 +467,7 @@ export default function CSVImport({ onClose, onSuccess }: Props) {
                 <div key={walletName} className="flex items-center gap-3 p-3 border rounded-lg">
                   <div className="flex-1">
                     <div className="font-semibold text-sm">{walletName}</div>
-                    <div className="text-xs text-gray-500">New wallet</div>
+                    <div className="text-xs text-gray-500">Nuovo wallet</div>
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-gray-500">Parent:</span>
@@ -459,9 +476,11 @@ export default function CSVImport({ onClose, onSuccess }: Props) {
                       value={walletConfig[walletName] || ''}
                       onChange={(e) => setWalletConfig((prev) => ({ ...prev, [walletName]: e.target.value }))}
                     >
-                      <option value="">-- Select parent --</option>
-                      {preview.rootWallets.map((root) => (
-                        <option key={root.id} value={root.id}>{root.name}</option>
+                      <option value="">— Nessuno (crea come root) —</option>
+                      {(preview.allWallets || preview.rootWallets).map((w) => (
+                        <option key={w.id} value={w.id}>
+                          {'level' in w && w.level > 0 ? '  '.repeat(w.level) : ''}{w.name}
+                        </option>
                       ))}
                     </select>
                   </div>
@@ -475,14 +494,14 @@ export default function CSVImport({ onClose, onSuccess }: Props) {
                 className="px-4 py-2 text-sm rounded border hover:bg-gray-50"
                 disabled={busy}
               >
-                Cancel
+                Annulla
               </button>
               <button
                 onClick={() => doImport(walletConfig)}
                 className="px-4 py-2 text-sm rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
-                disabled={busy || Object.values(walletConfig).some((v) => !v)}
+                disabled={busy}
               >
-                {busy ? 'Importing...' : 'Confirm & Import'}
+                {busy ? 'Importando...' : 'Conferma & Importa'}
               </button>
             </div>
           </div>

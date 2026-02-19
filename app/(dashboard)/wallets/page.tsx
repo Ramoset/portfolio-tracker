@@ -371,6 +371,7 @@ export default function WalletsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [exportingWallets, setExportingWallets] = useState<'CSV' | 'EXCEL' | null>(null)
+  const [mergingDuplicates, setMergingDuplicates] = useState(false)
 
   const [search, setSearch] = useState('')
   const [filterRoot, setFilterRoot] = useState('ALL')
@@ -540,6 +541,22 @@ export default function WalletsPage() {
     }
   }
 
+  const handleMergeDuplicates = async () => {
+    if (!confirm('Unifica tutti i wallet con nomi duplicati (es. "100X" e "100x")?\nLe transazioni verranno spostate sul wallet più vecchio e i duplicati eliminati.')) return
+    setMergingDuplicates(true)
+    try {
+      const res = await fetch('/api/wallets/merge-duplicates', { method: 'POST' })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error || 'Errore merge')
+      alert(json.message || 'Merge completato.')
+      if (json.wallets_deleted > 0) load()
+    } catch (e: any) {
+      alert(`Errore: ${e.message}`)
+    } finally {
+      setMergingDuplicates(false)
+    }
+  }
+
   return (
     <div>
       <PageHeader
@@ -547,6 +564,14 @@ export default function WalletsPage() {
         subtitle="Vista unica con filtri rapidi su root, livelli, tipo e P/L"
         actions={
           <div className="flex items-center gap-2">
+            <button
+              onClick={handleMergeDuplicates}
+              disabled={mergingDuplicates || loading}
+              className="rounded-xl border border-violet-200 bg-white px-3 py-1.5 text-sm text-violet-700 hover:bg-violet-50 disabled:opacity-50"
+              title="Unifica wallet con nomi identici (es. '100X' e '100x')"
+            >
+              {mergingDuplicates ? 'Unificando...' : '🔗 Unifica duplicati'}
+            </button>
             <button
               onClick={() => handleExportWallets('CSV')}
               disabled={exportingWallets !== null}

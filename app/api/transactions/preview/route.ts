@@ -20,8 +20,10 @@ export async function POST(request: NextRequest) {
     // Get existing wallets
     const { data: existingWallets } = await supabase
       .from('wallets')
-      .select('id, name, parent_wallet_id')
+      .select('id, name, parent_wallet_id, level')
       .eq('user_id', user.id)
+      .order('level', { ascending: true })
+      .order('name', { ascending: true })
 
     const existingWalletNames = new Set(existingWallets?.map(w => w.name.toUpperCase()) || [])
     const existingWalletIds = new Set(existingWallets?.map(w => String(w.id).toUpperCase()) || [])
@@ -54,12 +56,13 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Get root wallets for selection
+    // Get root wallets for selection (backward compat) + all wallets for full select
     const rootWallets = existingWallets?.filter(w => w.parent_wallet_id === null) || []
 
     return NextResponse.json({
       newWallets: newWallets.sort(),
       rootWallets: rootWallets.map(w => ({ id: w.id, name: w.name })),
+      allWallets: (existingWallets || []).map(w => ({ id: w.id, name: w.name, level: w.level ?? 0 })),
       totalTransactions: transactions.length,
       needsConfiguration: newWallets.length > 0
     })

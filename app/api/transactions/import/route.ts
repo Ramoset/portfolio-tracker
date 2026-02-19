@@ -140,8 +140,23 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'No rows provided' }, { status: 400 })
     }
 
+    const skipDuplicates: boolean = body?.skipDuplicates === true
+
     const results: any[] = []
     const walletCache = new Map<string, { id: string; name: string; level?: number }>() // key: wallet string upper
+
+    // Pre-load existing transaction fingerprints for deduplication (date+action+ticker+exchange)
+    const existingFingerprints = new Set<string>()
+    if (skipDuplicates) {
+      const { data: existingTxs } = await supabase
+        .from('transactions')
+        .select('date, action, ticker, exchange, quantity')
+        .eq('user_id', userId)
+      for (const t of existingTxs || []) {
+        const fp = `${t.date}|${t.action}|${t.ticker}|${String(t.exchange || '').trim()}|${Number(t.quantity).toFixed(8)}`
+        existingFingerprints.add(fp)
+      }
+    }
 
     // Helpers
     async function getWalletByNameOrId(walletStr: string) {
@@ -279,6 +294,15 @@ export async function POST(request: NextRequest) {
           leverage: tx.leverage === '' || tx.leverage === null || tx.leverage === undefined ? null : toNum(tx.leverage),
         })
 
+        // Deduplication check: salta se esiste già una transazione identica
+        if (skipDuplicates) {
+          const fp = `${payload.date}|${payload.action}|${payload.ticker}|${String(payload.exchange || '').trim()}|${Number(payload.quantity).toFixed(8)}`
+          if (existingFingerprints.has(fp)) {
+            results.push({ status: 'SKIP', reason: 'duplicate', action, ticker })
+            continue
+          }
+        }
+
         // If DEPOSIT/WITHDRAWAL without price, keep null (DB should allow it; if not, we can force 0)
         const { error: insErr } = await supabase.from('transactions').insert(payload)
         if (insErr) {
@@ -292,7 +316,8 @@ export async function POST(request: NextRequest) {
     }
 
     const imported = results.filter(r => r.status === 'OK').length
-    const failed = results.filter(r => r.status !== 'OK').length
+    const skipped = results.filter(r => r.status === 'SKIP').length
+    const failed = results.filter(r => r.status === 'FAIL').length
 
     if (importBatchId) {
       const { data: batchRow } = await supabase
@@ -316,9 +341,10 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       imported,
+      skipped,
       failed,
       import_batch_id: importBatchId,
-      summary: { success: imported, failed },
+      summary: { success: imported, skipped, failed },
       results,
     })
   } catch (e: any) {

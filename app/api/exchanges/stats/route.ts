@@ -91,7 +91,11 @@ function estimateFeeUsd(tx: any) {
   const fromTicker = String(tx.from_ticker || '').toUpperCase()
 
   if (price > 0 && STABLES.has(priceCur) && (feesCur === ticker || feesCur === fromTicker)) {
-    return fees * price
+    const feeUsd = fees * price
+    const notional = n(tx.quantity) * price
+    // Sanity check: fee non può superare il 50% del notional (dati CSV anomali)
+    if (notional > 0 && feeUsd > notional * 0.5) return 0
+    return feeUsd
   }
 
   return 0
@@ -138,7 +142,7 @@ export async function GET(request: Request) {
     const exchangeMap = new Map<string, { transactions: any[]; stats: ExchangeStats }>()
 
     for (const tx of transactions || []) {
-      const exchange = String(tx.exchange || 'Unknown')
+      const exchange = String(tx.exchange || 'Unknown').trim()
       if (!exchangeMap.has(exchange)) {
         exchangeMap.set(exchange, {
           transactions: [],
@@ -232,7 +236,7 @@ export async function GET(request: Request) {
     }
 
     for (const tx of transactions || []) {
-      const exchange = String(tx.exchange || 'Unknown')
+      const exchange = String(tx.exchange || 'Unknown').trim()
       const exData = exchangeMap.get(exchange)
       if (!exData) continue
       const stats = exData.stats
@@ -465,7 +469,7 @@ export async function GET(request: Request) {
 
     const list = Array.from(exchangeMap.values())
       .map(ex => ex.stats)
-      .sort((a, b) => b.total_invested - a.total_invested)
+      .sort((a, b) => b.global_live_value - a.global_live_value)
 
     if (!exchangeQuery) return NextResponse.json(list)
 
