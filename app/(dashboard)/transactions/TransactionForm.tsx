@@ -39,6 +39,7 @@ export default function TransactionForm({ onClose, onSuccess }: TransactionFormP
   const [newWalletName, setNewWalletName] = useState('')
   const [newWalletParent, setNewWalletParent] = useState<string>('')
   const [creatingWallet, setCreatingWallet] = useState(false)
+  const [useLeverage, setUseLeverage] = useState(false)
 
   const [formData, setFormData] = useState({
     date: new Date().toISOString().slice(0, 16), // YYYY-MM-DDTHH:MM
@@ -49,6 +50,7 @@ export default function TransactionForm({ onClose, onSuccess }: TransactionFormP
     price: '',
     price_currency: 'USDT',
     exchange: '',
+    counterparty_exchange: '',
     wallet_id: '',
     from_ticker: '',
     to_ticker: '',
@@ -67,6 +69,18 @@ export default function TransactionForm({ onClose, onSuccess }: TransactionFormP
     loadTransactions()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    if (!useLeverage) {
+      setFormData((p) => ({ ...p, direction: '', leverage: '' }))
+      return
+    }
+    setFormData((p) => ({
+      ...p,
+      direction: p.direction || 'LONG',
+      leverage: p.leverage || '1',
+    }))
+  }, [useLeverage])
 
   // If action changes away from SWAP, keep things as-is.
   // If action becomes SWAP, we can prefill some fields if already present.
@@ -135,34 +149,61 @@ export default function TransactionForm({ onClose, onSuccess }: TransactionFormP
     }
   }, [transactions])
 
+  const completeSuggestionOnTab = (
+    e: React.KeyboardEvent<HTMLInputElement>,
+    options: string[],
+    apply: (value: string) => void,
+    uppercase = false
+  ) => {
+    if (e.key !== 'Tab' || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return
+
+    const raw = String(e.currentTarget.value || '').trim()
+    if (!raw) return
+
+    const rawUpper = raw.toUpperCase()
+    const exact = options.some((opt) => String(opt).toUpperCase() === rawUpper)
+    if (exact) return
+
+    const match = options.find((opt) => String(opt).toUpperCase().startsWith(rawUpper))
+    if (!match) return
+
+    apply(uppercase ? String(match).toUpperCase() : String(match))
+  }
+
   // Helper: Check if ticker is FIAT or Stablecoin
   const isFiatOrStablecoin = (ticker: string): boolean => {
     return FIAT_STABLECOINS.includes((ticker || '').toUpperCase())
   }
 
-  // Helper: Check if should hide price
+  const isFundingAction = (): boolean => ['DEPOSIT', 'WITHDRAWAL'].includes(formData.action)
+  const isCryptoFundingWithoutWallet = (): boolean =>
+    isFundingAction() && !isFiatOrStablecoin(formData.ticker)
+
+  // Helper: Price is not required for funding flows
   const shouldHidePrice = (): boolean => {
-    const isDepositWithdrawal = ['DEPOSIT', 'WITHDRAWAL'].includes(formData.action)
-    return isDepositWithdrawal && isFiatOrStablecoin(formData.ticker)
+    return isFundingAction() || formData.action === 'AIRDROP'
   }
 
   // Helper: Get filtered wallets
   const getFilteredWallets = (): Wallet[] => {
-    if (shouldHidePrice()) {
-      return wallets.filter((w) => !w.parent_wallet_id) // Only root wallets
+    if (isFundingAction()) {
+      if (isFiatOrStablecoin(formData.ticker)) {
+        return wallets.filter((w) => !w.parent_wallet_id) // FIAT/stable on root
+      }
+      return [] // Crypto funding is exchange-based (no wallet selection)
     }
     return wallets
   }
 
   // Helper: Check if current wallet is root and ticker is crypto (should be in subwallet)
   const shouldShowSubwalletWarning = (): boolean => {
+    if (isCryptoFundingWithoutWallet()) return false
     if (!formData.wallet_id || !formData.ticker || !formData.action) return false
 
     // Only for non-FIAT/Stablecoin
     if (isFiatOrStablecoin(formData.ticker)) return false
 
-    // Only for BUY/SELL/SWAP/AIRDROP (not DEPOSIT/WITHDRAWAL)
-    const cryptoActions = ['BUY', 'SELL', 'SWAP', 'AIRDROP']
+    const cryptoActions = ['BUY', 'SELL', 'SWAP', 'AIRDROP', 'DEPOSIT', 'WITHDRAWAL']
     if (!cryptoActions.includes(formData.action)) return false
 
     // Check if current wallet is root
@@ -178,6 +219,13 @@ export default function TransactionForm({ onClose, onSuccess }: TransactionFormP
     }))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wallets, formData.action, formData.ticker])
+
+  useEffect(() => {
+    const valid = walletOptions.some((w) => w.id === formData.wallet_id)
+    if (!valid && walletOptions.length > 0) {
+      setFormData((p) => ({ ...p, wallet_id: walletOptions[0].id }))
+    }
+  }, [walletOptions, formData.wallet_id])
 
   const handleWalletChange = (value: string) => {
     if (value === '__CREATE_NEW__') {
@@ -280,8 +328,14 @@ export default function TransactionForm({ onClose, onSuccess }: TransactionFormP
     setLoading(true)
 
     try {
-      if (!formData.wallet_id) throw new Error('Wallet is required')
+      if (!isCryptoFundingWithoutWallet() && !formData.wallet_id) throw new Error('Wallet is required')
       if (!formData.exchange) throw new Error('Exchange is required')
+      if (isCryptoFundingWithoutWallet()) {
+        if (!formData.counterparty_exchange) throw new Error('Destination/source exchange is required')
+        if (formData.counterparty_exchange.trim().toUpperCase() === formData.exchange.trim().toUpperCase()) {
+          throw new Error('Counterparty exchange must be different from exchange')
+        }
+      }
 
       // SWAP validation (new UI)
       if (formData.action === 'SWAP') {
@@ -298,8 +352,13 @@ export default function TransactionForm({ onClose, onSuccess }: TransactionFormP
         // Non-swap validation
         if (!formData.ticker) throw new Error('Ticker is required')
         if (!formData.quantity || parseFloat(formData.quantity) <= 0) throw new Error('Quantity must be > 0')
+        if (useLeverage) {
+          const lev = parseFloat(formData.leverage || '0')
+          if (!Number.isFinite(lev) || lev < 1) throw new Error('Leverage must be >= 1')
+          if (!formData.direction) throw new Error('Direction is required when leverage is applied')
+        }
 
-        // Price validation (skip for DEPOSIT/WITHDRAWAL of FIAT/Stablecoin)
+        // Price validation (skip for DEPOSIT/WITHDRAWAL)
         if (!shouldHidePrice()) {
           if (!formData.price || parseFloat(formData.price) < 0) throw new Error('Price must be >= 0')
         }
@@ -319,18 +378,17 @@ export default function TransactionForm({ onClose, onSuccess }: TransactionFormP
         ticker: computed.ticker.toUpperCase(),
         type: computed.type,
         quantity: parseFloat(computed.quantity),
-        price: shouldHidePrice() ? 1 : parseFloat(computed.price),
-        price_currency: shouldHidePrice()
-          ? computed.ticker.toUpperCase()
-          : computed.price_currency.toUpperCase(),
+        price: shouldHidePrice() ? 0 : parseFloat(computed.price),
+        price_currency: shouldHidePrice() ? null : computed.price_currency.toUpperCase(),
         exchange: computed.exchange,
-        wallet_id: computed.wallet_id,
+        counterparty_exchange: isCryptoFundingWithoutWallet() ? computed.counterparty_exchange : null,
+        wallet_id: isCryptoFundingWithoutWallet() ? null : computed.wallet_id,
         from_ticker: computed.action === 'SWAP' ? computed.from_ticker.toUpperCase() : null,
         to_ticker: computed.action === 'SWAP' ? computed.to_ticker.toUpperCase() : null,
         fees: parseFloat(computed.fees || '0'),
         fees_currency: (computed.fees_currency || computed.price_currency).toUpperCase(),
-        direction: computed.direction || null,
-        leverage: computed.leverage ? parseFloat(computed.leverage) : null,
+        direction: useLeverage ? (computed.direction || 'LONG') : null,
+        leverage: useLeverage && computed.leverage ? parseFloat(computed.leverage) : null,
         notes: computed.notes || null,
       }
 
@@ -461,6 +519,49 @@ export default function TransactionForm({ onClose, onSuccess }: TransactionFormP
             </div>
           </div>
 
+          {/* Leverage toggle and fields */}
+          {formData.action !== 'SWAP' && ['BUY', 'SELL'].includes(formData.action) && (
+            <div className="rounded-lg border border-neutral-200 bg-neutral-50 p-4">
+              <label className="flex items-center gap-2 text-sm font-medium">
+                <input
+                  type="checkbox"
+                  checked={useLeverage}
+                  onChange={(e) => setUseLeverage(e.target.checked)}
+                  className="h-4 w-4 rounded border-neutral-300"
+                />
+                Se applicata (leva)
+              </label>
+
+              {useLeverage && (
+                <div className="mt-3 grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium mb-1">Direction *</label>
+                    <select
+                      value={formData.direction || 'LONG'}
+                      onChange={(e) => setFormData((p) => ({ ...p, direction: e.target.value }))}
+                      className="w-full px-3 py-2 border rounded-md"
+                    >
+                      <option value="LONG">LONG</option>
+                      <option value="SHORT">SHORT</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-1">Leverage *</label>
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="1"
+                      value={formData.leverage}
+                      onChange={(e) => setFormData((p) => ({ ...p, leverage: e.target.value }))}
+                      className="w-full px-3 py-2 border rounded-md"
+                      placeholder="es. 5"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* SWAP Fields (new UI, still saved as 1 row) */}
           {formData.action === 'SWAP' && (
             <div className="bg-purple-50 border border-purple-200 rounded-lg p-4">
@@ -475,6 +576,20 @@ export default function TransactionForm({ onClose, onSuccess }: TransactionFormP
                     placeholder="BTC"
                     list="swap-from-suggestions"
                     value={formData.from_ticker}
+                    onKeyDown={(e) =>
+                      completeSuggestionOnTab(
+                        e,
+                        suggestions.tickers,
+                        (value) => {
+                          const next = syncSwapComputedFields({
+                            ...formData,
+                            from_ticker: value.toUpperCase(),
+                          })
+                          setFormData(next)
+                        },
+                        true
+                      )
+                    }
                     onChange={(e) => {
                       const next = syncSwapComputedFields({
                         ...formData,
@@ -518,6 +633,20 @@ export default function TransactionForm({ onClose, onSuccess }: TransactionFormP
                     placeholder="SOL"
                     list="swap-to-suggestions"
                     value={formData.to_ticker}
+                    onKeyDown={(e) =>
+                      completeSuggestionOnTab(
+                        e,
+                        suggestions.tickers,
+                        (value) => {
+                          const next = syncSwapComputedFields({
+                            ...formData,
+                            to_ticker: value.toUpperCase(),
+                          })
+                          setFormData(next)
+                        },
+                        true
+                      )
+                    }
                     onChange={(e) => {
                       const next = syncSwapComputedFields({
                         ...formData,
@@ -599,6 +728,14 @@ export default function TransactionForm({ onClose, onSuccess }: TransactionFormP
                   placeholder="BTC"
                   list="ticker-suggestions"
                   value={formData.ticker}
+                  onKeyDown={(e) =>
+                    completeSuggestionOnTab(
+                      e,
+                      suggestions.tickers,
+                      (value) => setFormData({ ...formData, ticker: value.toUpperCase() }),
+                      true
+                    )
+                  }
                   onChange={(e) => setFormData({ ...formData, ticker: e.target.value.toUpperCase() })}
                   className="w-full px-3 py-2 border rounded-md"
                   style={{ WebkitAppearance: 'none', MozAppearance: 'textfield' }}
@@ -625,7 +762,7 @@ export default function TransactionForm({ onClose, onSuccess }: TransactionFormP
             </div>
           )}
 
-          {/* Row 3: Price + Currency (hidden for SWAP because derived, and hidden for DEPOSIT/WITHDRAWAL of FIAT/Stablecoin) */}
+          {/* Row 3: Price + Currency (hidden for SWAP and DEPOSIT/WITHDRAWAL) */}
           {formData.action !== 'SWAP' && !shouldHidePrice() && (
             <div className="grid grid-cols-2 gap-4">
               <div>
@@ -647,6 +784,14 @@ export default function TransactionForm({ onClose, onSuccess }: TransactionFormP
                   type="text"
                   list="price-currency-suggestions"
                   value={formData.price_currency}
+                  onKeyDown={(e) =>
+                    completeSuggestionOnTab(
+                      e,
+                      suggestions.currencies,
+                      (value) => setFormData({ ...formData, price_currency: value.toUpperCase() }),
+                      true
+                    )
+                  }
                   onChange={(e) => setFormData({ ...formData, price_currency: e.target.value.toUpperCase() })}
                   placeholder="USDT"
                   className="w-full px-3 py-2 border rounded-md"
@@ -681,6 +826,14 @@ export default function TransactionForm({ onClose, onSuccess }: TransactionFormP
                 type="text"
                 list="fees-currency-suggestions"
                 value={formData.fees_currency}
+                onKeyDown={(e) =>
+                  completeSuggestionOnTab(
+                    e,
+                    suggestions.currencies,
+                    (value) => setFormData({ ...formData, fees_currency: value.toUpperCase() }),
+                    true
+                  )
+                }
                 onChange={(e) => setFormData({ ...formData, fees_currency: e.target.value.toUpperCase() })}
                 placeholder="USDT"
                 className="w-full px-3 py-2 border rounded-md"
@@ -703,6 +856,9 @@ export default function TransactionForm({ onClose, onSuccess }: TransactionFormP
               list="exchange-suggestions"
               placeholder="Binance"
               value={formData.exchange}
+              onKeyDown={(e) =>
+                completeSuggestionOnTab(e, suggestions.exchanges, (value) => setFormData({ ...formData, exchange: value }))
+              }
               onChange={(e) => setFormData({ ...formData, exchange: e.target.value })}
               className="w-full px-3 py-2 border rounded-md"
               style={{ WebkitAppearance: 'none' }}
@@ -714,37 +870,78 @@ export default function TransactionForm({ onClose, onSuccess }: TransactionFormP
             </datalist>
           </div>
 
-          {/* Row 6: Wallet */}
-          <div>
-            <label className="block text-sm font-medium mb-1">Wallet *</label>
-            <select
-              required
-              value={formData.wallet_id}
-              onChange={(e) => handleWalletChange(e.target.value)}
-              disabled={walletsLoading}
-              className="w-full px-3 py-2 border rounded-md"
-              style={{ WebkitAppearance: 'menulist', minWidth: '200px' }}
-            >
-              <option value="">Select wallet...</option>
-              {walletOptions.map((w) => (
-                <option key={w.id} value={w.id}>
-                  {w.label}
+          {/* Row 5b: Counterparty Exchange for non-stable funding transfers */}
+          {isCryptoFundingWithoutWallet() && (
+            <div>
+              <label className="block text-sm font-medium mb-1">
+                {formData.action === 'WITHDRAWAL' ? 'To Exchange *' : 'From Exchange *'}
+              </label>
+              <input
+                type="text"
+                required
+                list="counterparty-exchange-suggestions"
+                placeholder={formData.action === 'WITHDRAWAL' ? 'Bybit' : 'Binance'}
+                value={formData.counterparty_exchange}
+                onKeyDown={(e) =>
+                  completeSuggestionOnTab(
+                    e,
+                    suggestions.exchanges,
+                    (value) => setFormData({ ...formData, counterparty_exchange: value })
+                  )
+                }
+                onChange={(e) => setFormData({ ...formData, counterparty_exchange: e.target.value })}
+                className="w-full px-3 py-2 border rounded-md"
+                style={{ WebkitAppearance: 'none' }}
+              />
+              <datalist id="counterparty-exchange-suggestions">
+                {suggestions.exchanges.map((ex) => (
+                  <option key={ex} value={ex} />
+                ))}
+              </datalist>
+            </div>
+          )}
+
+          {/* Row 6: Wallet (hidden for crypto DEPOSIT/WITHDRAWAL) */}
+          {!isCryptoFundingWithoutWallet() && (
+            <div>
+              <label className="block text-sm font-medium mb-1">Wallet *</label>
+              <select
+                required
+                value={formData.wallet_id}
+                onChange={(e) => handleWalletChange(e.target.value)}
+                disabled={walletsLoading}
+                className="w-full px-3 py-2 border rounded-md"
+                style={{ WebkitAppearance: 'menulist', minWidth: '200px' }}
+              >
+                <option value="">Select wallet...</option>
+                {walletOptions.map((w) => (
+                  <option key={w.id} value={w.id}>
+                    {w.label}
+                  </option>
+                ))}
+                <option value="__CREATE_NEW__" className="font-semibold text-blue-600">
+                  + Create New Wallet
                 </option>
-              ))}
-              <option value="__CREATE_NEW__" className="font-semibold text-blue-600">
-                + Create New Wallet
-              </option>
-            </select>
-            {walletsLoading && <p className="text-xs text-gray-500 mt-1">Loading wallets...</p>}
-            {shouldHidePrice() && (
-              <p className="text-xs text-blue-600 mt-1">Only root wallets shown for FIAT/Stablecoin deposits/withdrawals</p>
-            )}
-            {shouldShowSubwalletWarning() && (
-              <p className="text-xs text-red-600 mt-1 font-semibold">
-                ⚠️ Crypto transactions should be in a subwallet (e.g., Binance Spot, Bybit, etc.)
-              </p>
-            )}
-          </div>
+              </select>
+              {walletsLoading && <p className="text-xs text-gray-500 mt-1">Loading wallets...</p>}
+              {shouldHidePrice() && isFiatOrStablecoin(formData.ticker) && (
+                <p className="text-xs text-blue-600 mt-1">
+                  Per DEPOSIT/WITHDRAWAL su FIAT/stablecoin sono disponibili solo root wallet.
+                </p>
+              )}
+              {shouldShowSubwalletWarning() && (
+                <p className="text-xs text-red-600 mt-1 font-semibold">
+                  ⚠️ Questa operazione crypto deve stare in un sub-wallet (exchange/private), non nel root.
+                </p>
+              )}
+            </div>
+          )}
+
+          {isCryptoFundingWithoutWallet() && (
+            <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-700">
+              Wallet non richiesto: per DEPOSIT/WITHDRAWAL crypto non-stable il movimento e' tracciato solo sull'exchange.
+            </div>
+          )}
 
           {/* Row 7: Notes */}
           <div>
@@ -769,7 +966,7 @@ export default function TransactionForm({ onClose, onSuccess }: TransactionFormP
             </button>
             <button
               type="submit"
-              disabled={loading || !formData.wallet_id}
+              disabled={loading || (!isCryptoFundingWithoutWallet() && !formData.wallet_id)}
               className="px-4 py-2 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
             >
               {loading ? 'Saving...' : 'Save'}
