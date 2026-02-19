@@ -12,7 +12,7 @@ export async function GET(req: Request) {
 
   const { data, error } = await supabase
     .from('wallet_settings')
-    .select('wallet_id,target_pct')
+    .select('wallet_id,target_pct,accounting_method')
     .eq('user_id', user.id)
     .eq('wallet_id', wallet_id)
     .maybeSingle()
@@ -22,6 +22,7 @@ export async function GET(req: Request) {
   return NextResponse.json({
     wallet_id,
     target_pct: data?.target_pct ?? 0,
+    accounting_method: data?.accounting_method ?? 'AVG',
   })
 }
 
@@ -33,6 +34,7 @@ export async function POST(req: Request) {
   const body = await req.json().catch(() => null)
   const wallet_id = body?.wallet_id
   const target_pct = Number(body?.target_pct)
+  const accounting_method = ['LIFO','FIFO','AVG'].includes(body?.accounting_method) ? body.accounting_method : null
 
   if (!wallet_id) return NextResponse.json({ error: 'wallet_id is required' }, { status: 400 })
   if (!Number.isFinite(target_pct) || target_pct < 0 || target_pct > 100) {
@@ -42,10 +44,10 @@ export async function POST(req: Request) {
   const { data, error } = await supabase
     .from('wallet_settings')
     .upsert(
-      { user_id: user.id, wallet_id, target_pct },
+      { user_id: user.id, wallet_id, target_pct, ...(accounting_method ? { accounting_method } : {}) },
       { onConflict: 'user_id,wallet_id' }
     )
-    .select('wallet_id,target_pct')
+    .select('wallet_id,target_pct,accounting_method')
     .single()
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })

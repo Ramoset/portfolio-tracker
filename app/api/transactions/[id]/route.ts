@@ -40,13 +40,22 @@ export async function PATCH(
   try {
     const { id } = params
     const body = await request.json()
+    const { data: existingTx, error: existingTxError } = await supabase
+      .from('transactions')
+      .select('id,action,ticker,wallet_id')
+      .eq('id', id)
+      .eq('user_id', user.id)
+      .single()
+
+    if (existingTxError || !existingTx) {
+      return NextResponse.json({ error: 'Transaction not found' }, { status: 404 })
+    }
 
     const updates: any = {}
 
     if (body.date) updates.date = new Date(body.date).toISOString()
     if (body.action) updates.action = String(body.action).toUpperCase()
     if (body.ticker) updates.ticker = String(body.ticker).toUpperCase()
-    if (body.type) updates.type = String(body.type).toUpperCase()
 
     if (body.quantity !== undefined) updates.quantity = parseFloat(body.quantity)
     if (body.price !== undefined) updates.price = body.price === null ? null : parseFloat(body.price)
@@ -66,10 +75,26 @@ export async function PATCH(
     if (body.direction !== undefined) updates.direction = body.direction ? String(body.direction).toUpperCase() : null
     if (body.leverage !== undefined) updates.leverage = body.leverage === null ? null : parseFloat(body.leverage)
 
+    if (updates.leverage !== undefined && updates.leverage !== null) {
+      if (!Number.isFinite(updates.leverage) || updates.leverage < 1) {
+        return NextResponse.json({ error: 'leverage must be a number >= 1' }, { status: 400 })
+      }
+      const dir = updates.direction !== undefined ? updates.direction : undefined
+      if (dir !== undefined && dir !== null && dir !== 'LONG' && dir !== 'SHORT') {
+        return NextResponse.json({ error: 'direction must be LONG or SHORT when leverage is provided' }, { status: 400 })
+      }
+    }
+
+    const finalAction = String((updates.action ?? existingTx.action) || '').toUpperCase()
+    if (['DEPOSIT', 'WITHDRAWAL', 'AIRDROP'].includes(finalAction)) {
+      updates.price = 0
+      updates.price_currency = null
+    }
+
     if (body.wallet_id) {
       const { data: wallet, error: walletError } = await supabase
         .from('wallets')
-        .select('id')
+        .select('id,parent_wallet_id')
         .eq('id', body.wallet_id)
         .eq('user_id', user.id)
         .single()
@@ -99,4 +124,3 @@ export async function PATCH(
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
-

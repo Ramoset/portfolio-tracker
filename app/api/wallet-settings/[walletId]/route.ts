@@ -30,36 +30,41 @@ export async function PUT(
   request: Request,
   { params }: { params: { walletId: string } }
 ) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  try {
+    const supabase = await createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const walletId = params.walletId
-  const body = await request.json().catch(() => ({}))
+    const walletId = params.walletId
+    const body = await request.json().catch(() => ({}))
 
-  const targetPctRaw = body?.target_pct
-  const target_pct = Number(targetPctRaw)
-  if (!Number.isFinite(target_pct) || target_pct < 0 || target_pct > 1000) {
-    return NextResponse.json({ error: 'Invalid target_pct' }, { status: 400 })
+    const targetPctRaw = body?.target_pct
+    const target_pct = Number(targetPctRaw)
+    if (!Number.isFinite(target_pct) || target_pct < 0 || target_pct > 1000) {
+      return NextResponse.json({ error: 'Invalid target_pct' }, { status: 400 })
+    }
+
+    const notes = typeof body?.notes === 'string' ? body.notes : null
+
+    const { data, error } = await supabase
+      .from('wallet_settings')
+      .upsert(
+        {
+          wallet_id: walletId,
+          user_id: user.id,
+          target_pct,
+          notes,
+        },
+        { onConflict: 'wallet_id' }
+      )
+      .select('wallet_id,target_pct,notes,created_at,updated_at')
+      .single()
+
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+
+    return NextResponse.json({ settings: data })
+  } catch (error: any) {
+    console.error('Error updating wallet settings:', error)
+    return NextResponse.json({ error: error?.message || 'Internal server error' }, { status: 500 })
   }
-
-  const notes = typeof body?.notes === 'string' ? body.notes : null
-
-  const { data, error } = await supabase
-    .from('wallet_settings')
-    .upsert(
-      {
-        wallet_id: walletId,
-        user_id: user.id,
-        target_pct,
-        notes,
-      },
-      { onConflict: 'wallet_id' }
-    )
-    .select('wallet_id,target_pct,notes,created_at,updated_at')
-    .single()
-
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-
-  return NextResponse.json({ settings: data })
 }

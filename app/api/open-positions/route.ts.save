@@ -1,0 +1,334 @@
+
+import { NextResponse } from 'next/server'
+import { createClient } from '@/lib/supabase/server'
+import { createClient as createAdminClient } from '@supabase/supabase-js'
+
+type Tx = {
+  id: string
+  date: string
+  action: string
+  ticker: string
+  quantity: number
+  price: number
+  price_currency: string
+  fees: number
+  fees_currency: string
+  wallet_id: string
+  from_ticker: string | null
+  to_ticker: string | null
+}
+
+type Lot = {
+  lot_id: string       // tx.id originale
+  date: string
+  qty_original: number
+  qty_remaining: number
+  cost_per_unit: number // USD per unità
+  total_cost: number    // cost_per_unit * qty_remaining
+  source: 'BUY' | 'SWAP' | 'AIRDROP' | 'DEPOSIT'
+}
+
+type PositionRow = {
+  wallet_id: string
+  wallet_name: string
+  accounting_method: 'LIFO' | 'FIFO' | 'AVG'
+  ticker: string
+  qty_total: number
+  avg_cost: number
+  total_cost: number
+  price_live: number | null
+  value_live: number | null
+  pl_unrealized: number | null
+  pl_pct: number | null
+  lots: Lot[]
+}
+
+const STABLES = new Set(['USD', 'USDT', 'USDC', 'DAI', 'BUSD', 'TUSD', 'USDP', 'GUSD', 'EUR', 'GBP', 'CHF'])
+
+function n(x: any): number {
+  const v = Number(x)
+  return Number.isFinite(v) ? v : 0
+}
+
+/**
+ * Motore lotti con supporto LIFO / FIFO / AVG.
+ * Ritorna i lotti aperti per ogni ticker nel wallet.
+ */
+function computeLots(
+  transactions: Tx[],
+  method: 'LIFO' | 'FIFO' | 'AVG'
+): Map<string, Lot[]> {
+  // ticker -> array di lotti aperti (in ordine cronologico di acquisto)
+  const lots = new Map<string, Lot[]>()
+
+  const getLots = (ticker: string) => {
+    if (!lots.has(ticker)) lots.set(ticker, [])
+    return lots.get(ticker)!
+  }
+
+  const addLot = (ticker: string, lot: Lot) => {
+    getLots(ticker).push(lot)
+  }
+
+  // Rimuove qty da un ticker secondo il metodo scelto
+  const removeLots = (ticker: string, qtyToRemove: number): number => {
+    const arr = getLots(ticker)
+    if (!arr.length) return 0
+
+    let costRemoved = 0
+    let remaining = qtyToRemove
+
+    if (method === 'AVG') {
+      // AVG: toglie proporzionalmente da tutti i lotti
+      const totalQty = arr.reduce((s, l) => s + l.qty_remaining, 0)
+      const totalCost = arr.reduce((s, l) => s + l.total_cost, 0)
+      const avgCostPerUnit = totalQty > 0 ? totalCost / totalQty : 0
+      costRemoved = remaining * avgCostPerUnit
+      // Riduce proporzionalmente ogni lotto
+      for (const lot of arr) {
+        const ratio = totalQty > 0 ? lot.qty_remaining / totalQty : 0
+        const qtyTaken = remaining * ratio
+        lot.qty_remaining -= qtyTaken
+        lot.total_cost = lot.qty_remaining * lot.cost_per_unit
+      }
+    } else {
+      // LIFO: parte dall'ultimo lotto; FIFO: dal primo
+      const ordered = method === 'LIFO' ? [...arr].reverse() : arr
+
+      for (const lot of ordered) {
+        if (remaining <= 1e-12) break
+        const take = Math.min(lot.qty_remaining, remaining)
+        costRemoved += take * lot.cost_per_unit
+        lot.qty_remaining -= take
+        lot.total_cost = lot.qty_remaining * lot.cost_per_unit
+        remaining -= take
+      }
+    }
+
+    // Rimuovi lotti esauriti
+    lots.set(ticker, arr.filter(l => l.qty_remaining > 1e-12))
+    return costRemoved
+  }
+
+  const txsSorted = [...transactions].sort(
+    (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
+  )
+
+  for (const tx of txsSorted) {
+    const action = String(tx.action || '').toUpperCase()
+    const ticker = String(tx.ticker || '').toUpperCase()
+    const qty = n(tx.quantity)
+    const price = n(tx.price)
+    const priceCur = String(tx.price_currency || 'USDT').toUpperCase()
+    const fees = n(tx.fees)
+    const feesCur = String(tx.fees_currency || 'USDT').toUpperCase()
+    const feeUsd = STABLES.has(feesCur) ? fees : 0
+
+    if (action === 'AIRDROP') {
+      addLot(ticker, {
+        lot_id: tx.id,
+        date: tx.date,
+        qty_original: qty,
+        qty_remaining: qty,
+        cost_per_unit: 0,
+        total_cost: 0,
+        source: 'AIRDROP',
+      })
+      continue
+    }
+
+    if (action === 'DEPOSIT') {
+      const costUsd = STABLES.has(ticker) ? qty : 0
+      if (!STABLES.has(ticker)) {
+        addLot(ticker, {
+          lot_id: tx.id,
+          date: tx.date,
+          qty_original: qty,
+          qty_remaining: qty,
+          cost_per_unit: 0,
+          total_cost: 0,
+          source: 'DEPOSIT',
+        })
+      }
+      continue
+    }
+
+    if (action === 'WITHDRAWAL') {
+      removeLots(ticker, qty)
+      continue
+    }
+
+    if (action === 'BUY') {
+      if (!STABLES.has(priceCur)) {
+        addLot(ticker, {
+          lot_id: tx.id,
+          date: tx.date,
+          qty_original: qty,
+          qty_remaining: qty,
+          cost_per_unit: 0,
+          total_cost: 0,
+          source: 'BUY',
+        })
+        continue
+      }
+      const totalCost = qty * price + feeUsd
+      const costPerUnit = totalCost / qty
+      addLot(ticker, {
+        lot_id: tx.id,
+        date: tx.date,
+        qty_original: qty,
+        qty_remaining: qty,
+        cost_per_unit: costPerUnit,
+        total_cost: totalCost,
+        source: 'BUY',
+      })
+      continue
+    }
+
+    if (action === 'SELL') {
+      removeLots(ticker, qty)
+      continue
+    }
+
+    if (action === 'SWAP') {
+      const recvTicker = String(tx.to_ticker || tx.ticker || '').toUpperCase()
+      const paidTicker = String(tx.from_ticker || tx.price_currency || '').toUpperCase()
+      const recvQty = qty
+      const paidQty = qty * price
+      if (!recvTicker || !paidTicker || recvQty <= 0 || paidQty <= 0) continue
+
+      const costRemoved = removeLots(paidTicker, paidQty)
+      const totalCost = costRemoved + feeUsd
+      const costPerUnit = recvQty > 0 ? totalCost / recvQty : 0
+
+      addLot(recvTicker, {
+        lot_id: tx.id,
+        date: tx.date,
+        qty_original: recvQty,
+        qty_remaining: recvQty,
+        cost_per_unit: costPerUnit,
+        total_cost: totalCost,
+        source: 'SWAP',
+      })
+      continue
+    }
+  }
+
+  // Rimuovi stables dal risultato
+  for (const ticker of STABLES) lots.delete(ticker)
+
+  return lots
+}
+
+export async function GET() {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  // 1) Wallet dell'utente
+  const { data: wallets } = await supabase
+    .from('wallets')
+    .select('id,name,parent_wallet_id')
+    .eq('user_id', user.id)
+
+  const allWallets = wallets || []
+  // Solo subwallet (non root) — le transazioni stanno nei subwallet
+  const subwallets = allWallets.filter(w => w.parent_wallet_id !== null)
+  const subIds = subwallets.map(w => w.id)
+
+  if (subIds.length === 0) return NextResponse.json({ positions: [] })
+
+  // 2) Accounting method per ogni subwallet
+  const { data: settingsRows } = await supabase
+    .from('wallet_settings')
+    .select('wallet_id,accounting_method')
+    .eq('user_id', user.id)
+    .in('wallet_id', subIds)
+
+  const methodMap = new Map<string, 'LIFO' | 'FIFO' | 'AVG'>()
+  for (const s of settingsRows || []) {
+    methodMap.set(s.wallet_id, (s.accounting_method as 'LIFO' | 'FIFO' | 'AVG') || 'AVG')
+  }
+
+  // 3) Transazioni
+  const { data: txs } = await supabase
+    .from('transactions')
+    .select('id,date,action,ticker,quantity,price,price_currency,fees,fees_currency,wallet_id,from_ticker,to_ticker')
+    .eq('user_id', user.id)
+    .in('wallet_id', subIds)
+
+  const txByWallet = new Map<string, Tx[]>()
+  for (const tx of txs || []) {
+    const wid = tx.wallet_id
+    if (!txByWallet.has(wid)) txByWallet.set(wid, [])
+    txByWallet.get(wid)!.push(tx as Tx)
+  }
+
+  // 4) Prezzi live dalla cache
+  const admin = createAdminClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  )
+  const { data: priceRows } = await admin
+    .from('prices_cache')
+    .select('ticker, price_usd')
+  const pricesCache = new Map<string, number>()
+  for (const p of priceRows || []) {
+    pricesCache.set(p.ticker.toUpperCase(), Number(p.price_usd))
+  }
+
+  // 5) Calcola posizioni aperte per ogni subwallet
+  const positions: PositionRow[] = []
+
+  for (const sw of subwallets) {
+    const txList = txByWallet.get(sw.id) || []
+    if (txList.length === 0) continue
+
+    const method = methodMap.get(sw.id) || 'AVG'
+    const lotsMap = computeLots(txList, method)
+
+    for (const [ticker, lotArr] of lotsMap.entries()) {
+      if (lotArr.length === 0) continue
+
+      const qty_total = lotArr.reduce((s, l) => s + l.qty_remaining, 0)
+      const total_cost = lotArr.reduce((s, l) => s + l.total_cost, 0)
+      if (qty_total < 1e-9) continue
+
+      const avg_cost = total_cost / qty_total
+      const price_live = pricesCache.get(ticker) ?? null
+      const value_live = price_live != null ? qty_total * price_live : null
+      const pl_unrealized = value_live != null ? value_live - total_cost : null
+      const pl_pct = pl_unrealized != null && total_cost > 0
+        ? (pl_unrealized / total_cost) * 100
+        : null
+
+      // Ordina i lotti: LIFO = più recenti prima, FIFO/AVG = più vecchi prima
+      const sortedLots = method === 'LIFO'
+        ? [...lotArr].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+        : [...lotArr].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+
+      positions.push({
+        wallet_id: sw.id,
+        wallet_name: sw.name,
+        accounting_method: method,
+        ticker,
+        qty_total,
+        avg_cost,
+        total_cost,
+        price_live,
+        value_live,
+        pl_unrealized,
+        pl_pct,
+        lots: sortedLots,
+      })
+    }
+  }
+
+  // Ordina: per wallet_name poi ticker
+  positions.sort((a, b) => {
+    const wCmp = a.wallet_name.localeCompare(b.wallet_name)
+    return wCmp !== 0 ? wCmp : a.ticker.localeCompare(b.ticker)
+  })
+
+  return NextResponse.json({ positions })
+}
